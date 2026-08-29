@@ -119,41 +119,37 @@ namespace IndustrialMonitor
                     string hex = BitConverter.ToString(buffer).Replace("-", " ");
                     AppendLog($"📩 收到 {read} 字节: {hex}");
 
-                    // --- 新增：简单解析 Modbus 响应 ---
                     if (read >= 5 && buffer[0] == 0x01 && buffer[1] == 0x03)
                     {
-                        int dataLength = buffer[2]; // 数据字节数
-                        int registerCount = dataLength / 2; // 寄存器个数
+                        int dataLength = buffer[2];
+                        int registerCount = dataLength / 2;
 
                         AppendLog($"📊 解析结果（共 {registerCount} 个寄存器）:");
 
-                        for (int i = 0; i < registerCount; i++)
-                        {
-                            int value = (buffer[3 + i * 2] << 8) | buffer[4 + i * 2];
-                            int address = i; // 起始地址为0，后续依次递增
-                            AppendLog($"   寄存器 {address} = {value}");
-                        }
-
-                        RegisterValues.Clear();
-                        for (int i = 0; i < registerCount; i++)
-                        {
-                            int value = (buffer[3 + i * 2] << 8) | buffer[4 + i * 2];
-                            RegisterValues.Add(new RegisterData { Address = i, Value = value });
-                        }
-
-                        // 先保存旧值，用于比对
+                        // 1. 先保存当前界面上显示的旧值（用于比对）
                         var oldValues = RegisterValues.ToDictionary(d => d.Address, d => d.Value);
 
+                        // 2. 清空并重新填充新数据
                         RegisterValues.Clear();
+
                         for (int i = 0; i < registerCount; i++)
                         {
                             int value = (buffer[3 + i * 2] << 8) | buffer[4 + i * 2];
-                            bool changed = false;
 
-                            // 如果旧值存在且不同，标记变化
-                            if (oldValues.TryGetValue(i, out int oldVal) && oldVal != value)
+                            // 检查是否变化
+                            bool changed = false;
+                            if (oldValues.TryGetValue(i, out int oldVal))
                             {
-                                changed = true;
+                                if (oldVal != value)
+                                {
+                                    changed = true;
+                                    AppendLog($"   🔔 寄存器 {i} 变化: {oldVal} → {value}");
+                                }
+                            }
+                            else
+                            {
+                                // 首次读取，不标记为变化
+                                changed = false;
                             }
 
                             RegisterValues.Add(new RegisterData
@@ -164,28 +160,29 @@ namespace IndustrialMonitor
                             });
                         }
 
-                        // 延迟 2 秒后清除高亮标记
-                        var timer = new System.Timers.Timer(2000);
-                        timer.Elapsed += (s, e) =>
+                        // 3. 如果有任何变化，2秒后清除高亮
+                        bool anyChanged = RegisterValues.Any(d => d.HasChanged);
+                        if (anyChanged)
                         {
-                            Dispatcher.Invoke(() =>
+                            var timer = new System.Timers.Timer(2000);
+                            timer.Elapsed += (s, ev) =>
                             {
-                                foreach (var item in RegisterValues)
+                                Dispatcher.Invoke(() =>
                                 {
-                                    item.HasChanged = false;
-                                }
-                            });
-                            timer.Stop();
-                            timer.Dispose();
-                        };
-                        timer.AutoReset = false;
-                        timer.Start();
-
+                                    foreach (var item in RegisterValues)
+                                    {
+                                        item.HasChanged = false;
+                                    }
+                                });
+                                timer.Stop();
+                                timer.Dispose();
+                            };
+                            timer.AutoReset = false;
+                            timer.Start();
+                        }
                     }
-                    // --- 解析结束 ---
 
                     UpdateRecvCount(read);
-
                 });
             }
             catch (Exception ex)

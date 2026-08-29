@@ -22,19 +22,25 @@ namespace IndustrialMonitor.Models
             get => _value;
             set
             {
-                if (_value != value)  // 值真的变了
+                if (_value != value)
                 {
                     _value = value;
-                    HasChanged = true;  // 标记为变化
+                    OnPropertyChanged();
                 }
-                OnPropertyChanged();
             }
         }
 
         public bool HasChanged
         {
             get => _hasChanged;
-            set { _hasChanged = value; OnPropertyChanged(); }
+            set
+            {
+                if (_hasChanged != value)
+                {
+                    _hasChanged = value;
+                    OnPropertyChanged();
+                }
+            }
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;
