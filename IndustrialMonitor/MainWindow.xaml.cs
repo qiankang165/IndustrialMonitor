@@ -10,13 +10,33 @@ namespace IndustrialMonitor
     public partial class MainWindow : Window
     {
         private SerialPort? _serialPort;
-        public ObservableCollection<RegisterData> RegisterValues { get; set; } = new ObservableCollection<RegisterData>();
+        public ObservableCollection<DeviceData> Devices { get; set; } = new ObservableCollection<DeviceData>();
 
         public MainWindow()
         {
             this.DataContext = this;
             InitializeComponent();
             RefreshPortList();
+            InitDevices();
+        }
+
+        private void InitDevices()
+        {
+            Devices.Clear();
+            for (int i = 1; i <= 3; i++)
+            {
+                var device = new DeviceData
+                {
+                    DeviceId = i,
+                    DeviceName = $"设备 {i}",
+                    Registers = new ObservableCollection<RegisterData>()
+                };
+                for (int j = 0; j < 3; j++)
+                {
+                    device.Registers.Add(new RegisterData { Address = j, Value = 0 });
+                }
+                Devices.Add(device);
+            }
         }
 
         /// <summary>
@@ -71,22 +91,6 @@ namespace IndustrialMonitor
                 _serialPort.DataReceived += SerialPort_DataReceived;
                 _serialPort.Open();
 
-                // 构造要发送的数据（不含CRC）
-                byte[] command = new byte[] { 0x01, 0x03, 0x00, 0x00, 0x00, 0x03 };
-
-                // 自动计算CRC
-                byte[] crc = Helpers.ModbusCRC.Calculate(command);
-
-                // 拼接完整指令：原数据 + CRC
-                byte[] fullCommand = new byte[command.Length + crc.Length];
-                Array.Copy(command, 0, fullCommand, 0, command.Length);
-                Array.Copy(crc, 0, fullCommand, command.Length, crc.Length);
-
-                // 发送
-                _serialPort.Write(fullCommand, 0, fullCommand.Length);
-                AppendLog($"📤 发送指令: {BitConverter.ToString(fullCommand).Replace("-", " ")}");
-
-
                 btnConnect.Content = "关闭串口";
                 btnConnect.Background = new System.Windows.Media.SolidColorBrush(
                     System.Windows.Media.Color.FromRgb(231, 76, 60));
@@ -94,6 +98,10 @@ namespace IndustrialMonitor
                 lblStatus.Foreground = new System.Windows.Media.SolidColorBrush(
                     System.Windows.Media.Color.FromRgb(46, 204, 113));
                 AppendLog($"成功打开串口 {portName}");
+
+                // ===== 修改点：连接成功后，读取所有设备 =====
+                BtnRead_Click(null!, null!);
+                // ============================================
             }
             catch (Exception ex)
             {
@@ -102,6 +110,9 @@ namespace IndustrialMonitor
             }
         }
 
+        /// <summary>
+        /// 数据接收事件（异步）
+        /// </summary>
         /// <summary>
         /// 数据接收事件（异步）
         /// </summary>
@@ -119,66 +130,77 @@ namespace IndustrialMonitor
                     string hex = BitConverter.ToString(buffer).Replace("-", " ");
                     AppendLog($"📩 收到 {read} 字节: {hex}");
 
-                    if (read >= 5 && buffer[0] == 0x01 && buffer[1] == 0x03)
+                    // 检查是否为 Modbus 响应（功能码 0x03）
+                    if (read >= 5 && buffer[1] == 0x03)
                     {
-                        int dataLength = buffer[2];
-                        int registerCount = dataLength / 2;
+                        int deviceId = buffer[0];          // 设备地址（1、2、3）
+                        int dataLength = buffer[2];        // 数据字节数
+                        int registerCount = dataLength / 2; // 寄存器个数
 
-                        AppendLog($"📊 解析结果（共 {registerCount} 个寄存器）:");
-
-                        // 1. 先保存当前界面上显示的旧值（用于比对）
-                        var oldValues = RegisterValues.ToDictionary(d => d.Address, d => d.Value);
-
-                        // 2. 清空并重新填充新数据
-                        RegisterValues.Clear();
-
-                        for (int i = 0; i < registerCount; i++)
+                        // 查找对应的设备
+                        var device = Devices.FirstOrDefault(d => d.DeviceId == deviceId);
+                        if (device != null)
                         {
-                            int value = (buffer[3 + i * 2] << 8) | buffer[4 + i * 2];
+                            // 先保存旧值用于变化检测
+                            var oldValues = device.Registers.ToDictionary(r => r.Address, r => r.Value);
 
-                            // 检查是否变化
-                            bool changed = false;
-                            if (oldValues.TryGetValue(i, out int oldVal))
+                            // 更新寄存器的值
+                            for (int i = 0; i < registerCount; i++)
                             {
-                                if (oldVal != value)
+                                int value = (buffer[3 + i * 2] << 8) | buffer[4 + i * 2];
+                                int address = i;
+
+                                // 如果值发生变化，标记 HasChanged
+                                bool hasChanged = false;
+                                if (oldValues.TryGetValue(address, out int oldVal) && oldVal != value)
                                 {
-                                    changed = true;
-                                    AppendLog($"   🔔 寄存器 {i} 变化: {oldVal} → {value}");
+                                    hasChanged = true;
+                                    AppendLog($"🔔 设备{deviceId} 寄存器{address} 变化: {oldVal} → {value}");
+                                }
+
+                                // 更新数据（如果该寄存器已存在）
+                                if (address < device.Registers.Count)
+                                {
+                                    device.Registers[address].Value = value;
+                                    device.Registers[address].HasChanged = hasChanged;
+                                }
+                                else
+                                {
+                                    // 如果寄存器数量超出，动态添加（兼容性处理）
+                                    device.Registers.Add(new RegisterData
+                                    {
+                                        Address = address,
+                                        Value = value,
+                                        HasChanged = hasChanged
+                                    });
                                 }
                             }
-                            else
-                            {
-                                // 首次读取，不标记为变化
-                                changed = false;
-                            }
 
-                            RegisterValues.Add(new RegisterData
-                            {
-                                Address = i,
-                                Value = value,
-                                HasChanged = changed
-                            });
-                        }
+                            AppendLog($"📥 设备 {deviceId} 数据已更新（{registerCount} 个寄存器）");
 
-                        // 3. 如果有任何变化，2秒后清除高亮
-                        bool anyChanged = RegisterValues.Any(d => d.HasChanged);
-                        if (anyChanged)
-                        {
-                            var timer = new System.Timers.Timer(2000);
-                            timer.Elapsed += (s, ev) =>
+                            // 2秒后清除高亮
+                            if (device.Registers.Any(r => r.HasChanged))
                             {
-                                Dispatcher.Invoke(() =>
+                                var timer = new System.Timers.Timer(2000);
+                                timer.Elapsed += (s, ev) =>
                                 {
-                                    foreach (var item in RegisterValues)
+                                    Dispatcher.Invoke(() =>
                                     {
-                                        item.HasChanged = false;
-                                    }
-                                });
-                                timer.Stop();
-                                timer.Dispose();
-                            };
-                            timer.AutoReset = false;
-                            timer.Start();
+                                        foreach (var reg in device.Registers)
+                                        {
+                                            reg.HasChanged = false;
+                                        }
+                                    });
+                                    timer.Stop();
+                                    timer.Dispose();
+                                };
+                                timer.AutoReset = false;
+                                timer.Start();
+                            }
+                        }
+                        else
+                        {
+                            AppendLog($"⚠️ 收到未知设备 {deviceId} 的数据");
                         }
                     }
 
@@ -192,7 +214,7 @@ namespace IndustrialMonitor
         }
 
 
-        private void BtnRead_Click(object sender, RoutedEventArgs e)
+        private async void BtnRead_Click(object sender, RoutedEventArgs e)
         {
             if (_serialPort == null || !_serialPort.IsOpen)
             {
@@ -200,16 +222,23 @@ namespace IndustrialMonitor
                 return;
             }
 
-            // 构建读取指令：读取地址0开始的3个寄存器
-            byte[] command = new byte[] { 0x01, 0x03, 0x00, 0x00, 0x00, 0x03 };
-            byte[] crc = Helpers.ModbusCRC.Calculate(command);
-            byte[] fullCommand = new byte[command.Length + crc.Length];
-            Array.Copy(command, 0, fullCommand, 0, command.Length);
-            Array.Copy(crc, 0, fullCommand, command.Length, crc.Length);
+            // 轮询设备地址 1, 2, 3
+            for (int deviceId = 1; deviceId <= 3; deviceId++)
+            {
+                byte[] command = new byte[] { (byte)deviceId, 0x03, 0x00, 0x00, 0x00, 0x03 };
+                byte[] crc = Helpers.ModbusCRC.Calculate(command);
+                byte[] fullCommand = new byte[command.Length + crc.Length];
+                Array.Copy(command, 0, fullCommand, 0, command.Length);
+                Array.Copy(crc, 0, fullCommand, command.Length, crc.Length);
 
-            _serialPort.Write(fullCommand, 0, fullCommand.Length);
-            AppendLog($"📤 发送读取指令: {BitConverter.ToString(fullCommand).Replace("-", " ")}");
+                _serialPort.Write(fullCommand, 0, fullCommand.Length);
+                AppendLog($"📤 发送指令 (设备{deviceId}): {BitConverter.ToString(fullCommand).Replace("-", " ")}");
+                await Task.Delay(200);
+
+            }
         }
+
+
 
         /// <summary>
         /// 刷新按钮
