@@ -214,6 +214,14 @@ namespace IndustrialMonitor
                             AppendLog($"⚠️ 收到未知设备 {deviceId} 的数据");
                         }
                     }
+                    else if (buffer[1] == 0x06)  // 写响应
+                    {
+                        int deviceId = buffer[0];
+                        ushort registerAddress = (ushort)((buffer[2] << 8) | buffer[3]);
+                        ushort value = (ushort)((buffer[4] << 8) | buffer[5]);
+                        AppendLog($"✅ 写入成功 (设备{deviceId}, 寄存器{registerAddress} = {value})");
+                    }
+
 
                     UpdateRecvCount(read);
                 });
@@ -393,6 +401,109 @@ namespace IndustrialMonitor
             catch (Exception ex)
             {
                 AppendLog($"❌ 刷新曲线失败: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 写入寄存器按钮事件
+        /// </summary>
+        private async void BtnWrite_Click(object sender, RoutedEventArgs e)
+        {
+            if (_serialPort == null || !_serialPort.IsOpen)
+            {
+                AppendLog("⚠️ 请先打开串口");
+                return;
+            }
+
+            // 1. 获取用户输入
+            if (cmbWriteDevice.SelectedItem is not ComboBoxItem deviceItem ||
+                cmbWriteRegister.SelectedItem is not ComboBoxItem registerItem)
+            {
+                AppendLog("⚠️ 请选择设备和寄存器");
+                return;
+            }
+
+            byte deviceId = byte.Parse(deviceItem.Tag.ToString()!);
+            ushort registerAddress = ushort.Parse(registerItem.Tag.ToString()!);
+
+            if (!ushort.TryParse(txtWriteValue.Text, out ushort value))
+            {
+                AppendLog($"⚠️ 无效的数值: {txtWriteValue.Text}");
+                return;
+            }
+
+            // 2. 构造写入指令
+            byte[] command = Helpers.ModbusHelper.BuildWriteSingleRegisterCommand(deviceId, registerAddress, value);
+            AppendLog($"📤 写入指令 (设备{deviceId}, 寄存器{registerAddress} = {value}): {BitConverter.ToString(command).Replace("-", " ")}");
+
+            // 3. 发送指令
+            _serialPort.Write(command, 0, command.Length);
+
+            // 4. 等待响应（写入响应通常很快，等待200ms）
+            await Task.Delay(200);
+        }
+
+        /// <summary>
+        /// 导出 CSV 按钮事件
+        /// </summary>
+        private void BtnExport_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                // 1. 获取用户选择的设备和寄存器
+                if (cmbDeviceForChart == null || cmbDeviceForChart.SelectedItem == null ||
+                    cmbRegisterForChart == null || cmbRegisterForChart.SelectedItem == null)
+                {
+                    AppendLog("⚠️ 请先在曲线区域选择设备和寄存器");
+                    MessageBox.Show("请先在曲线区域选择设备和寄存器", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                var deviceItem = cmbDeviceForChart.SelectedItem as ComboBoxItem;
+                var registerItem = cmbRegisterForChart.SelectedItem as ComboBoxItem;
+
+                if (deviceItem == null || registerItem == null)
+                {
+                    AppendLog("⚠️ 选择的设备和寄存器无效");
+                    return;
+                }
+
+                int deviceId = int.Parse(deviceItem.Tag.ToString()!);
+                int registerAddress = int.Parse(registerItem.Tag.ToString()!);
+
+                // 2. 从数据库读取数据
+                var data = Helpers.DatabaseHelper.GetHistoryData(deviceId, registerAddress, 1000);
+                if (data == null || data.Count == 0)
+                {
+                    AppendLog($"⚠️ 设备{deviceId} 寄存器{registerAddress} 暂无数据");
+                    MessageBox.Show("该设备/寄存器暂无历史数据", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                // 3. 生成 CSV 内容
+                var csvContent = new System.Text.StringBuilder();
+                // CSV 标题行
+                csvContent.AppendLine("时间,数值");
+                // 数据行
+                foreach (var record in data)
+                {
+                    csvContent.AppendLine($"{record.Timestamp},{record.Value}");
+                }
+
+                // 4. 保存到桌面
+                string desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+                string fileName = $"数据导出_设备{deviceId}_寄存器{registerAddress}_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
+                string filePath = System.IO.Path.Combine(desktopPath, fileName);
+
+                System.IO.File.WriteAllText(filePath, csvContent.ToString(), System.Text.Encoding.UTF8);
+
+                AppendLog($"✅ CSV 导出成功: {filePath}");
+                MessageBox.Show($"数据已导出到桌面:\n{fileName}", "导出成功", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"❌ 导出失败: {ex.Message}");
+                MessageBox.Show($"导出失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
     }

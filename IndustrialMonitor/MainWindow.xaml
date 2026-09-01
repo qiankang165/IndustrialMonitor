@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:lvc="clr-namespace:LiveCharts.Wpf;assembly=LiveCharts.Wpf"
-        Title="工业数据采集监控系统" Height="600" Width="900"
+        Title="工业数据采集监控系统" Height="600" Width="1000"
         WindowStartupLocation="CenterScreen">
 
     <Grid Margin="10">
@@ -32,6 +32,25 @@
         Background="#F39C12" Foreground="White" FontWeight="Bold"
         Click="BtnRead_Click" Margin="0,0,10,0"/>
                 <Label Content="设备数: 0" x:Name="lblDeviceCount" Foreground="White" Margin="30,0,0,0"/>
+                <Label Content="写入:" Foreground="White" FontWeight="Bold" VerticalAlignment="Center"/>
+                <ComboBox x:Name="cmbWriteDevice" Width="60" Margin="5,0" SelectedIndex="0">
+                    <ComboBoxItem Content="设备1" Tag="1"/>
+                    <ComboBoxItem Content="设备2" Tag="2"/>
+                    <ComboBoxItem Content="设备3" Tag="3"/>
+                </ComboBox>
+                <ComboBox x:Name="cmbWriteRegister" Width="60" Margin="0,0,5,0" SelectedIndex="0">
+                    <ComboBoxItem Content="寄存器0" Tag="0"/>
+                    <ComboBoxItem Content="寄存器1" Tag="1"/>
+                    <ComboBoxItem Content="寄存器2" Tag="2"/>
+                </ComboBox>
+                <TextBox x:Name="txtWriteValue" Width="80" Text="0" Foreground="Black" VerticalContentAlignment="Center"/>
+                <Button x:Name="btnWrite" Content="写入" Width="60" Height="28" 
+            Background="#E67E22" Foreground="White" FontWeight="Bold"
+            Click="BtnWrite_Click" Margin="5,0"/>
+                <!-- 导出 CSV 按钮 -->
+                <Button x:Name="btnExport" Content="导出 CSV" Width="80" Height="28" 
+        Background="#8E44AD" Foreground="White" FontWeight="Bold"
+        Click="BtnExport_Click" Margin="5,0"/>
             </StackPanel>
         </Border>
 
