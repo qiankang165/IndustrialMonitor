@@ -12,12 +12,18 @@ namespace IndustrialMonitor
         private SerialPort? _serialPort;
         public ObservableCollection<DeviceData> Devices { get; set; } = new ObservableCollection<DeviceData>();
 
+        public ObservableCollection<string> ChartLabels { get; set; } = new ObservableCollection<string>();
+        public ObservableCollection<int> ChartValues { get; set; } = new ObservableCollection<int>();
+
+
         public MainWindow()
         {
             this.DataContext = this;
             InitializeComponent();
             RefreshPortList();
             InitDevices();
+            Helpers.DatabaseHelper.InitializeDatabase();
+            AppendLog("数据库已初始化");
         }
 
         private void InitDevices()
@@ -39,9 +45,6 @@ namespace IndustrialMonitor
             }
         }
 
-        /// <summary>
-        /// 刷新串口列表
-        /// </summary>
         private void RefreshPortList()
         {
             cmbPorts.Items.Clear();
@@ -99,9 +102,9 @@ namespace IndustrialMonitor
                     System.Windows.Media.Color.FromRgb(46, 204, 113));
                 AppendLog($"成功打开串口 {portName}");
 
-                // ===== 修改点：连接成功后，读取所有设备 =====
-                BtnRead_Click(null!, null!);
-                // ============================================
+
+                //BtnRead_Click(null!, null!);
+
             }
             catch (Exception ex)
             {
@@ -110,9 +113,7 @@ namespace IndustrialMonitor
             }
         }
 
-        /// <summary>
-        /// 数据接收事件（异步）
-        /// </summary>
+
         /// <summary>
         /// 数据接收事件（异步）
         /// </summary>
@@ -134,17 +135,17 @@ namespace IndustrialMonitor
                     if (read >= 5 && buffer[1] == 0x03)
                     {
                         int deviceId = buffer[0];          // 设备地址（1、2、3）
-                        int dataLength = buffer[2];        // 数据字节数
+                        int dataLength = buffer[2];        // 寄存器位的字节个数
                         int registerCount = dataLength / 2; // 寄存器个数
 
                         // 查找对应的设备
                         var device = Devices.FirstOrDefault(d => d.DeviceId == deviceId);
                         if (device != null)
                         {
-                            // 先保存旧值用于变化检测
+                            // 1. 先保存旧值用于变化检测
                             var oldValues = device.Registers.ToDictionary(r => r.Address, r => r.Value);
 
-                            // 更新寄存器的值
+                            // 2. 更新寄存器的值（界面数据）
                             for (int i = 0; i < registerCount; i++)
                             {
                                 int value = (buffer[3 + i * 2] << 8) | buffer[4 + i * 2];
@@ -175,10 +176,20 @@ namespace IndustrialMonitor
                                     });
                                 }
                             }
-
                             AppendLog($"📥 设备 {deviceId} 数据已更新（{registerCount} 个寄存器）");
 
-                            // 2秒后清除高亮
+                            // 3. 存入数据库（异步，避免阻塞界面）
+                            for (int i = 0; i < registerCount; i++)
+                            {
+                                int value = (buffer[3 + i * 2] << 8) | buffer[4 + i * 2];
+                                int address = i;
+                                Task.Run(() =>
+                                {
+                                    Helpers.DatabaseHelper.InsertData(deviceId, address, value);
+                                });
+                            }
+
+                            // 4. 两秒后清除高亮
                             if (device.Registers.Any(r => r.HasChanged))
                             {
                                 var timer = new System.Timers.Timer(2000);
@@ -213,7 +224,11 @@ namespace IndustrialMonitor
             }
         }
 
-
+        /// <summary>
+        /// 读取按钮点击事件，轮询所有设备地址并发送读取指令
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
         private async void BtnRead_Click(object sender, RoutedEventArgs e)
         {
             if (_serialPort == null || !_serialPort.IsOpen)
@@ -238,11 +253,11 @@ namespace IndustrialMonitor
             }
         }
 
-
-
         /// <summary>
-        /// 刷新按钮
+        /// 刷新串口列表按钮点击事件
         /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
         private void BtnRefresh_Click(object sender, RoutedEventArgs e)
         {
             RefreshPortList();
@@ -285,6 +300,100 @@ namespace IndustrialMonitor
                 _serialPort.Dispose();
             }
             base.OnClosing(e);
+        }
+
+
+/*        private void CmbDeviceForChart_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            UpdateChart();
+        }
+
+        private void CmbRegisterForChart_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            UpdateChart();
+        }*/
+
+        private void BtnRefreshChart_Click(object sender, RoutedEventArgs e)
+        {
+            UpdateChart();
+        }
+
+        private void UpdateChart()
+        {
+            // 使用安全访问符（?.）避免在控件尚未初始化时访问 SelectedItem 导致 NullReferenceException
+            if (cmbDeviceForChart?.SelectedItem is ComboBoxItem deviceItem &&
+                cmbRegisterForChart?.SelectedItem is ComboBoxItem registerItem)
+            {
+                int deviceId = int.Parse(deviceItem.Tag.ToString()!);
+                int registerAddress = int.Parse(registerItem.Tag.ToString()!);
+                RefreshChart(deviceId, registerAddress);
+            }
+        }
+
+        private void RefreshChart(int deviceId, int registerAddress)
+        {
+            try
+            {
+                // 1. 从数据库读取数据
+                var data = Helpers.DatabaseHelper.GetHistoryData(deviceId, registerAddress, 100);
+
+                if (data == null || data.Count == 0)
+                {
+                    AppendLog($"⚠️ 没有找到设备{deviceId}寄存器{registerAddress}的数据");
+                    // 清空图表
+                    chartHistory.Series.Clear();
+                    chartHistory.AxisX.Clear();
+                    return;
+                }
+
+                AppendLog($"📊 找到 {data.Count} 条数据");
+
+                // 2. 准备数据
+                var labels = new List<string>();
+                var values = new LiveCharts.ChartValues<int>();
+
+                foreach (var record in data)
+                {
+                    labels.Add(record.Timestamp.Substring(11, 8)); // HH:mm:ss
+                    values.Add(record.Value);
+                }
+
+                // 3. 清空并重新设置图表
+                chartHistory.Series.Clear();
+                chartHistory.AxisX.Clear();
+                chartHistory.AxisY.Clear();
+
+                // 4. 创建曲线
+                var series = new LiveCharts.Wpf.LineSeries
+                {
+                    Title = $"设备{deviceId}-寄存器{registerAddress}",
+                    Values = values,
+                    LineSmoothness = 0.5,
+                    StrokeThickness = 2,
+                    PointGeometrySize = 8
+                };
+                chartHistory.Series.Add(series);
+
+                // 5. 设置 X 轴
+                chartHistory.AxisX.Add(new LiveCharts.Wpf.Axis
+                {
+                    Labels = labels,
+                    LabelsRotation = 45,
+                    ShowLabels = true
+                });
+
+                // 6. 设置 Y 轴
+                chartHistory.AxisY.Add(new LiveCharts.Wpf.Axis
+                {
+                    Title = "数值"
+                });
+
+                AppendLog($"📈 曲线已刷新: {values.Count} 个点");
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"❌ 刷新曲线失败: {ex.Message}");
+            }
         }
     }
 }
